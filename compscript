@@ -6,23 +6,28 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# 2. Prompt for basic inputs
-read -p "Enter the PostgreSQL Server IP: " db_ip
-read -p "Enter your Team ID (e.g., 1): " team_id
-DOMAIN="team$team_id.ncaecybergames.org"
-
-# 3. Prompt for the Root CA Certificate (Multi-line Input)
+# 3. Prompt for the Root CA Certificate (Improved multi-line input)
 echo "------------------------------------------------"
 echo "Paste the Root CA Certificate (including BEGIN and END tags)."
-echo "When finished, press ENTER and then Ctrl+D:"
+echo "The script will continue automatically once it sees the END tag."
 echo "------------------------------------------------"
-CA_PATH="/usr/local/share/ca-certificates/ncae-ca.crt"
-# This reads the pasted content until EOF (Ctrl+D)
-cat > "$CA_PATH"
 
-# Validate if the user actually pasted a certificate
+CA_PATH="/usr/local/share/ca-certificates/ncae-ca.crt"
+# Clear existing file
+> "$CA_PATH"
+
+# Read line by line from the keyboard (/dev/tty)
+while IFS= read -r line; do
+    echo "$line" >> "$CA_PATH"
+    # Stop when the end tag is detected
+    if [[ "$line" == *"-----END CERTIFICATE-----"* ]]; then
+        break
+    fi
+done < /dev/tty
+
+# Validate
 if ! grep -q "BEGIN CERTIFICATE" "$CA_PATH"; then
-    echo "ERROR: Valid certificate not detected. Exiting."
+    echo "ERROR: Valid certificate not detected in $CA_PATH. Exiting."
     exit 1
 fi
 
