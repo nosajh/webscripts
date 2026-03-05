@@ -1,0 +1,179 @@
+#!/bin/bash
+
+# 1. Check if running as root
+if [[ $EUID -ne 0 ]]; then
+   echo "This script must be run as root (sudo)"
+   exit 1
+fi
+
+# 2. Prompt for inputs
+read -p "Enter the PostgreSQL Server IP: " db_ip
+read -p "Enter your Team ID (e.g., 1): " team_id
+DOMAIN="team$team_id.ncaecybergames.org"
+
+# 3. Install System Dependencies
+echo "Installing system dependencies and Certbot..."
+apt update
+apt install git python3 python3-dev python3-pip python3-venv libpq-dev gcc nginx certbot python3-certbot-nginx -y
+
+# 4. Neutralize and Backup existing /opt/etechacademy
+echo "Neutralizing existing installation..."
+systemctl stop etechacademy 2>/dev/null
+
+if [ -d "/opt/etechacademy" ]; then
+    echo "Existing app directory found. Moving to /opt/etechacademyold"
+    rm -rf /opt/etechacademyold  
+    mv /opt/etechacademy /opt/etechacademyold
+    chown -R root:root /opt/etechacademyold
+    [ -f "/opt/etechacademyold/main.py" ] && mv /opt/etechacademyold/main.py /opt/etechacademyold/main.py.disabled
+    chmod -R 600 /opt/etechacademyold
+    chmod 700 /opt/etechacademyold
+fi
+
+# 5. Setup New Patched App
+echo "Deploying patched application..."
+cd /opt/
+# Replace URL with your actual repo
+git clone https://github.com/nosajh/webapp_patched.git webapp_patched
+mv webapp_patched etechacademy
+chown -R www-data:www-data /opt/etechacademy
+
+# 6. Setup Python Virtual Environment
+echo "Building Virtual Environment..."
+cd /opt/etechacademy
+python3 -m venv web_env
+./web_env/bin/pip install --upgrade pip
+./web_env/bin/pip install psycopg2-binary
+./web_env/bin/pip install -r requirements.txt
+chown -R www-data:www-data /opt/etechacademy/web_env
+
+# 7. Setup /var/lib/etechacademy and .env file
+echo "Configuring environment file..."
+CONFIG_DIR="/var/lib/etechacademy"
+mkdir -p $CONFIG_DIR
+
+if [ -f "$CONFIG_DIR/.env" ]; then
+    mv "$CONFIG_DIR/.env" "/opt/etechacademy.envold"
+    chown root:root /opt/etechacademy.envold
+    chmod 600 /opt/etechacademy.envold
+fi
+
+cat <<EOF > "$CONFIG_DIR/.env"
+SITE_NAME=eTech Academy
+SECRET_KEY=2bfba9271846eb01be2ac15d704357c9e65ecd20a86c97f8ada6b8864a238c67
+WEB_APP_PORT=5000
+WEB_APP_HOST=127.0.0.1
+POSTGRES_HOST=$db_ip
+POSTGRES_PORT=5432
+POSTGRES_DB=db
+POSTGRES_USER=tung_tung
+POSTGRES_PASSWORD='Tung_Tung_$ahur67!'
+WERKZEUG_DEBUG_PIN=off
+DOMAIN_NAME=$DOMAIN
+EOF
+
+chown -R www-data:www-data $CONFIG_DIR
+chmod 600 "$CONFIG_DIR/.env"
+
+# 8. Setup Systemd Service
+echo "Configuring Systemd service..."
+SERVICE_PATH="/etc/systemd/system/etechacademy.service"
+
+if [ -f "$SERVICE_PATH" ]; then
+    mv "$SERVICE_PATH" "/opt/etechacademy.serviceold"
+fi
+
+cat <<EOF > "$SERVICE_PATH"
+[Unit]
+Description=eTechAcademy Flask Application
+After=network.target postgresql.service
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/etechacademy
+EnvironmentFile=/var/lib/etechacademy/.env
+Environment="PATH=/opt/etechacademy/web_env/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/opt/etechacademy/web_env/bin/python3 main.py
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# 9. Setup Nginx (Clean Slate & SSL Generation)
+echo "Resetting Nginx..."
+if [ -f "/etc/nginx/sites-available/etechacademy" ]; then
+    mv /etc/nginx/sites-available/etechacademy /opt/etechacademy.nginxold
+fi
+apt purge nginx nginx-common nginx-full -y
+rm -rf /etc/nginx
+apt install nginx -y
+rm -f /etc/nginx/sites-enabled/default
+
+# STAGE 1: Minimal Port 80 config so Certbot can verify the domain
+cat <<EOF > /etc/nginx/sites-available/etechacademy
+server {
+    listen 80;
+    server_name $DOMAIN;
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+    }
+}
+EOF
+ln -sf /etc/nginx/sites-available/etechacademy /etc/nginx/sites-enabled/
+systemctl restart nginx
+
+# STAGE 2: Run Certbot
+echo "Requesting SSL Certificates from Competition CA..."
+certbot --nginx \
+  --server https://ca.ncaecybergames.org/acme/acme/directory \
+  --no-random-sleep-on-renew \
+  -d "$DOMAIN" \
+  --non-interactive \
+  --agree-tos \
+  -m "admin@$DOMAIN" \
+  --redirect
+
+# STAGE 3: Final Hardened Nginx Config
+# We write this manually to ensure it points to the correct Let's Encrypt paths
+cat <<EOF > /etc/nginx/sites-available/etechacademy
+server {
+    listen 80;
+    server_name $DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name $DOMAIN;
+
+    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https; 
+    }
+}
+EOF
+
+# 10. Start Services
+echo "Finalizing deployment..."
+nginx -t && systemctl restart nginx
+systemctl daemon-reload
+systemctl enable etechacademy.service
+systemctl start etechacademy.service
+
+echo "------------------------------------------------"
+echo "DEPLOYMENT COMPLETE"
+echo "SSL Paths: /etc/letsencrypt/live/$DOMAIN/"
+echo "Backups:   Stored in /opt/ (etechacademyold, .envold, etc.)"
+echo "------------------------------------------------"
+systemctl status etechacademy.service --no-pager
