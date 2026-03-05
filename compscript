@@ -6,6 +6,12 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
+# 2. Prompt for inputs
+# 2. Prompt for basic inputs
+read -p "Enter the PostgreSQL Server IP: " db_ip
+read -p "Enter your Team ID (e.g., 1): " team_id
+DOMAIN="team$team_id.ncaecybergames.org"
+
 # 3. Prompt for the Root CA Certificate (Improved multi-line input)
 echo "------------------------------------------------"
 echo "Paste the Root CA Certificate (including BEGIN and END tags)."
