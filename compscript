@@ -12,6 +12,10 @@ read -p "Enter the PostgreSQL Server IP: " db_ip
 read -p "Enter your Team ID (e.g., 1): " team_id
 DOMAIN="team$team_id.ncaecybergames.org"
 
+# Define IPs for the server_name
+EXTERNAL_IP="172.18.13.$team_id"
+INTERNAL_IP="192.168.$team_id.5"
+
 # 3. Prompt for the Root CA Certificate (Improved multi-line input)
 echo "------------------------------------------------"
 echo "Paste the Root CA Certificate (including BEGIN and END tags)."
@@ -150,7 +154,7 @@ rm -f /etc/nginx/sites-enabled/default
 cat <<EOF > /etc/nginx/sites-available/etechacademy
 server {
     listen 80;
-    server_name $DOMAIN;
+    server_name $DOMAIN $EXTERNAL_IP $INTERNAL_IP localhost;
     location / {
         proxy_pass http://127.0.0.1:5000;
     }
@@ -170,17 +174,29 @@ certbot --nginx \
   -m "admin@$DOMAIN" \
   --redirect
 
+# Check if Certbot succeeded
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "⚠️  WARN: Certbot automated request failed!"
+    echo "This usually happens if DNS is not yet pointing to this IP."
+    echo ""
+    echo "Please run this command manually to debug/fix:"
+    echo "certbot --nginx --server https://ca.ncaecybergames.org/acme/acme/directory --no-random-sleep-on-renew -d $DOMAIN"
+    echo ""
+    read -p "Once you see 'Successfully received certificate', press ENTER to continue script..." < /dev/tty
+fi
+
 # STAGE 3: Final Hardened SSL Nginx Config
 cat <<EOF > /etc/nginx/sites-available/etechacademy
 server {
     listen 80;
-    server_name $DOMAIN;
+    server_name $DOMAIN $EXTERNAL_IP $INTERNAL_IP localhost;
     return 301 https://\$host\$request_uri;
 }
 
 server {
     listen 443 ssl;
-    server_name $DOMAIN;
+    server_name $DOMAIN $EXTERNAL_IP $INTERNAL_IP localhost;
 
     ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
@@ -206,6 +222,7 @@ echo "------------------------------------------------"
 echo "DEPLOYMENT COMPLETE"
 echo "CA Installed: /usr/local/share/ca-certificates/ncae-ca.crt"
 echo "Original app neutralized at /opt/etechacademy.old"
+echo "Check site at: https://$DOMAIN"
 echo "New app running from /opt/etechacademy"
 echo "------------------------------------------------"
 systemctl status etechacademy.service --no-pager
