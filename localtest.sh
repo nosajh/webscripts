@@ -59,7 +59,6 @@ chown -R www-data:www-data /opt/etechacademy
 echo "Building Virtual Environment..."
 cd /opt/etechacademy
 python3 -m venv web_env
-./web_env/bin/pip install --upgrade pip
 ./web_env/bin/pip install psycopg2-binary
 ./web_env/bin/pip install -r requirements.txt
 chown -R www-data:www-data /opt/etechacademy/web_env
