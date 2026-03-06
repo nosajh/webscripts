@@ -77,14 +77,14 @@ fi
 
 cat <<EOF > "$CONFIG_DIR/.env"
 SITE_NAME=eTech Academy
-SECRET_KEY=bBurgerKingsFootLeftuce934567420!
+SECRET_KEY=bBurgerKingsFootLeftuce934567420!!
 WEB_APP_PORT=5000
 WEB_APP_HOST=127.0.0.1
 POSTGRES_HOST=$db_ip
 POSTGRES_PORT=5432
 POSTGRES_DB=db
-POSTGRES_USER=john_pork
-POSTGRES_PASSWORD='Kev1n_Bac0n!'
+POSTGRES_USER=torch_bearer
+POSTGRES_PASSWORD='torch_of_the_light!'
 WERKZEUG_DEBUG_PIN=off
 DOMAIN_NAME=team$team_id.ncaecybergames.org
 EOF
