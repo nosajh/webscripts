@@ -8,7 +8,7 @@ fi
 
 # 2. Prompt for inputs
 # 2. Prompt for basic inputs
-read -p "Enter the PostgreSQL Server IP: " db_ip
+read -p "Enter the PostgreSQL Server IP (192.168.t.7): " db_ip
 read -p "Enter your Team ID (e.g., 1): " team_id
 DOMAIN="team$team_id.ncaecybergames.org"
 
