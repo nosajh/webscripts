@@ -13,7 +13,7 @@ DOMAIN="team$team_id.ncaecybergames.org"
 EXTERNAL_IP="172.18.13.$team_id"
 INTERNAL_IP="192.168.$team_id.5"
 
-# 3. Prompt for the Root CA Certificate (Multi-line input)
+# 3. Prompt for the Root CA Certificate
 echo "------------------------------------------------"
 echo "Paste the Root CA Certificate (including BEGIN and END tags)."
 echo "The script will continue automatically once it sees the END tag."
@@ -55,7 +55,6 @@ fi
 # 7. Setup New Patched App
 echo "Cloning patched application..."
 cd /opt/
-# Replace with your actual git repository URL
 git clone https://github.com/nosajh/webapp_patched.git webapp_patched
 mv webapp_patched etechacademy
 chown -R www-data:www-data /opt/etechacademy
@@ -118,7 +117,7 @@ WantedBy=multi-user.target
 EOF
 
 # 11. Prepare Nginx (Stage 1: HTTP Only)
-echo "Preparing Nginx..."
+echo "Preparing Nginx for Port 80 scoring..."
 rm -f /etc/nginx/sites-enabled/default
 cat <<EOF > /etc/nginx/sites-available/etechacademy
 server {
@@ -150,23 +149,26 @@ certbot --nginx \
   -m "admin@$DOMAIN" \
   --redirect
 
-# Logic for Certbot Failure
+# FAIL-SAFE LOGIC:
+# Check if the certificates actually exist on the disk
 APPLY_SSL="yes"
-if [ $? -ne 0 ]; then
+if [ ! -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
+    echo ""
     echo "------------------------------------------------"
-    echo "⚠️  WARN: Automated Certbot failed!"
-    echo "Manual Command: certbot --nginx --server https://ca.ncaecybergames.org/acme/acme/directory --no-random-sleep-on-renew -d $DOMAIN"
+    echo "⚠️  WARN: SSL Certificate not found!"
+    echo "Automated Certbot failed. Attempt manual fix now:"
+    echo "certbot --nginx --server https://ca.ncaecybergames.org/acme/acme/directory --no-random-sleep-on-renew -d $DOMAIN"
     echo "------------------------------------------------"
-    read -p "Did you successfully generate a certificate manually? (Y/N): " manual_check < /dev/tty
-    if [[ ! "$manual_check" =~ ^[Yy]$ ]]; then
-        echo "SSL Generation skipped. App will run on Port 80 only."
+    read -p "Did you manage to get a certificate manually? (y/n): " manual_ans < /dev/tty
+    if [[ ! "$manual_ans" =~ ^[Yy]$ ]]; then
+        echo "Proceeding with Port 80 ONLY."
         APPLY_SSL="no"
     fi
 fi
 
 # 13. Final Nginx Config Decision
 if [ "$APPLY_SSL" == "yes" ]; then
-    echo "Applying Hardened SSL Configuration..."
+    echo "Finalizing SSL Configuration..."
     cat <<EOF > /etc/nginx/sites-available/etechacademy
 server {
     listen 80;
@@ -195,8 +197,7 @@ server {
 }
 EOF
 else
-    echo "Maintaining Port 80 Configuration (Non-SSL)..."
-    # Port 80 config is already applied in Step 11, we just ensure it's correct
+    echo "SSL disabled. Site will remain on Port 80."
 fi
 
 # 14. Finalize and Start
@@ -209,11 +210,11 @@ systemctl restart etechacademy.service
 echo "------------------------------------------------"
 echo "DEPLOYMENT COMPLETE"
 if [ "$APPLY_SSL" == "yes" ]; then
-    echo "Mode: HTTPS (SSL Enabled)"
-    echo "URL:  https://$DOMAIN"
+    echo "STATUS: HTTPS ENABLED"
+    echo "URL:    https://$DOMAIN"
 else
-    echo "Mode: HTTP ONLY (SSL FAILED/SKIPPED)"
-    echo "URL:  http://$DOMAIN"
+    echo "STATUS: HTTP ONLY (FALLBACK)"
+    echo "URL:    http://$DOMAIN"
 fi
 echo "------------------------------------------------"
 systemctl status etechacademy.service --no-pager
