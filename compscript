@@ -6,60 +6,46 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# 2. Prompt for inputs
 # 2. Prompt for basic inputs
-read -p "Enter the PostgreSQL Server IP (192.168.t.7): " db_ip
-read -p "Enter your Team ID (e.g., 1): " team_id
+read -p "Enter the PostgreSQL Server IP (192.168.t.7): " db_ip < /dev/tty
+read -p "Enter your Team ID (e.g., 1): " team_id < /dev/tty
 DOMAIN="team$team_id.ncaecybergames.org"
-
-# Define IPs for the server_name
 EXTERNAL_IP="172.18.13.$team_id"
 INTERNAL_IP="192.168.$team_id.5"
 
-# 3. Prompt for the Root CA Certificate (Improved multi-line input)
+# 3. Prompt for the Root CA Certificate (Multi-line input)
 echo "------------------------------------------------"
 echo "Paste the Root CA Certificate (including BEGIN and END tags)."
 echo "The script will continue automatically once it sees the END tag."
 echo "------------------------------------------------"
-
 CA_PATH="/usr/local/share/ca-certificates/ncae-ca.crt"
-# Clear existing file
 > "$CA_PATH"
-
-# Read line by line from the keyboard (/dev/tty)
 while IFS= read -r line; do
     echo "$line" >> "$CA_PATH"
-    # Stop when the end tag is detected
     if [[ "$line" == *"-----END CERTIFICATE-----"* ]]; then
         break
     fi
 done < /dev/tty
 
-# Validate
 if ! grep -q "BEGIN CERTIFICATE" "$CA_PATH"; then
-    echo "ERROR: Valid certificate not detected in $CA_PATH. Exiting."
+    echo "ERROR: Valid certificate not detected. Exiting."
     exit 1
 fi
 
 # 4. Update System Trust Store
-echo "Updating system trust store..."
 update-ca-certificates
 
 # 5. Install System Dependencies
 echo "Installing system dependencies..."
 apt update
-apt install git python3 python3-dev python3-pip python3-venv libpq-dev gcc certbot  -y
+apt install git python3 python3-dev python3-pip python3-venv libpq-dev gcc certbot python3-certbot-nginx nginx -y
 
 # 6. Neutralize and Backup existing /opt/etechacademy
-echo "Neutralizing existing installation..."
 systemctl stop etechacademy 2>/dev/null
-
 if [ -d "/opt/etechacademy" ]; then
-    echo "Existing app directory found. Neutralizing and moving to /opt/etechacademy.old"
+    echo "Neutralizing existing app..."
     rm -rf /opt/etechacademy.old  
     mv /opt/etechacademy /opt/etechacademy.old
-    
-    # Kills persistence
     chown -R root:root /opt/etechacademy.old
     [ -f "/opt/etechacademy.old/main.py" ] && mv /opt/etechacademy.old/main.py /opt/etechacademy.old/main.py.disabled
     chmod -R 600 /opt/etechacademy.old
@@ -67,7 +53,7 @@ if [ -d "/opt/etechacademy" ]; then
 fi
 
 # 7. Setup New Patched App
-echo "Deploying patched application..."
+echo "Cloning patched application..."
 cd /opt/
 # Replace with your actual git repository URL
 git clone https://github.com/nosajh/webapp_patched.git webapp_patched
@@ -75,7 +61,7 @@ mv webapp_patched etechacademy
 chown -R www-data:www-data /opt/etechacademy
 
 # 8. Setup Python Virtual Environment
-echo "Building Virtual Environment..."
+echo "Building Python Venv..."
 cd /opt/etechacademy
 python3 -m venv web_env
 ./web_env/bin/pip install --upgrade pip
@@ -84,14 +70,10 @@ python3 -m venv web_env
 chown -R www-data:www-data /opt/etechacademy/web_env
 
 # 9. Setup /var/lib/etechacademy and .env file
-echo "Configuring environment file..."
 CONFIG_DIR="/var/lib/etechacademy"
 mkdir -p $CONFIG_DIR
-
 if [ -f "$CONFIG_DIR/.env" ]; then
     mv "$CONFIG_DIR/.env" "/opt/etechacademy.envold"
-    chown root:root /opt/etechacademy.envold
-    chmod 600 /opt/etechacademy.envold
 fi
 
 cat <<EOF > "$CONFIG_DIR/.env"
@@ -107,17 +89,12 @@ POSTGRES_PASSWORD='torch_of_the_light!'
 WERKZEUG_DEBUG_PIN=off
 DOMAIN_NAME=$DOMAIN
 EOF
-
 chown -R www-data:www-data $CONFIG_DIR
 chmod 600 "$CONFIG_DIR/.env"
 
 # 10. Setup Systemd Service
-echo "Configuring Systemd service..."
 SERVICE_PATH="/etc/systemd/system/etechacademy.service"
-
-if [ -f "$SERVICE_PATH" ]; then
-    mv "$SERVICE_PATH" "/opt/etechacademy.serviceold"
-fi
+[ -f "$SERVICE_PATH" ] && mv "$SERVICE_PATH" "/opt/etechacademy.serviceold"
 
 cat <<EOF > "$SERVICE_PATH"
 [Unit]
@@ -140,38 +117,29 @@ PrivateTmp=true
 WantedBy=multi-user.target
 EOF
 
-# 11. Setup Nginx (Clean Slate & SSL Generation)
-echo "Resetting Nginx..."
-if [ -f "/etc/nginx/sites-available/etechacademy" ]; then
-    mv /etc/nginx/sites-available/etechacademy /opt/etechacademy.nginxold
-fi
-apt purge nginx nginx-common nginx-full -y
-rm -rf /etc/nginx
-apt install nginx python3-certbot-nginx -y
+# 11. Prepare Nginx (Stage 1: HTTP Only)
+echo "Preparing Nginx..."
 rm -f /etc/nginx/sites-enabled/default
-
-# STAGE 1: Temporary Port 80 for Certbot verification
 cat <<EOF > /etc/nginx/sites-available/etechacademy
 server {
     listen 80;
     server_name $DOMAIN $EXTERNAL_IP $INTERNAL_IP localhost;
-
     server_tokens off;
     add_header X-Frame-Options "SAMEORIGIN";
-    audoindex off;
 
     location / {
-        limit_except GET POST {
-            deny all;
-        }
+        limit_except GET POST { deny all; }
         proxy_pass http://127.0.0.1:5000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
 EOF
 ln -sf /etc/nginx/sites-available/etechacademy /etc/nginx/sites-enabled/
 systemctl restart nginx
 
-# STAGE 2: Run Certbot with Competition ACME server
+# 12. Run Certbot
 echo "Requesting SSL Certificates..."
 certbot --nginx \
   --server https://ca.ncaecybergames.org/acme/acme/directory \
@@ -182,20 +150,24 @@ certbot --nginx \
   -m "admin@$DOMAIN" \
   --redirect
 
-# Check if Certbot succeeded
+# Logic for Certbot Failure
+APPLY_SSL="yes"
 if [ $? -ne 0 ]; then
-    echo ""
-    echo "⚠️  WARN: Certbot automated request failed!"
-    echo "This usually happens if DNS is not yet pointing to this IP."
-    echo ""
-    echo "Please run this command manually to debug/fix:"
-    echo "certbot --nginx --server https://ca.ncaecybergames.org/acme/acme/directory --no-random-sleep-on-renew -d $DOMAIN"
-    echo ""
-    read -p "Once you see 'Successfully received certificate', press ENTER to continue script..." < /dev/tty
+    echo "------------------------------------------------"
+    echo "⚠️  WARN: Automated Certbot failed!"
+    echo "Manual Command: certbot --nginx --server https://ca.ncaecybergames.org/acme/acme/directory --no-random-sleep-on-renew -d $DOMAIN"
+    echo "------------------------------------------------"
+    read -p "Did you successfully generate a certificate manually? (Y/N): " manual_check < /dev/tty
+    if [[ ! "$manual_check" =~ ^[Yy]$ ]]; then
+        echo "SSL Generation skipped. App will run on Port 80 only."
+        APPLY_SSL="no"
+    fi
 fi
 
-# STAGE 3: Final Hardened SSL Nginx Config
-cat <<EOF > /etc/nginx/sites-available/etechacademy
+# 13. Final Nginx Config Decision
+if [ "$APPLY_SSL" == "yes" ]; then
+    echo "Applying Hardened SSL Configuration..."
+    cat <<EOF > /etc/nginx/sites-available/etechacademy
 server {
     listen 80;
     server_name $DOMAIN $EXTERNAL_IP $INTERNAL_IP localhost;
@@ -205,22 +177,30 @@ server {
 server {
     listen 443 ssl;
     server_name $DOMAIN $EXTERNAL_IP $INTERNAL_IP localhost;
+    server_tokens off;
+    add_header X-Frame-Options "SAMEORIGIN";
 
     ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
     location / {
+        limit_except GET POST { deny all; }
         proxy_pass http://127.0.0.1:5000;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https; 
     }
 }
 EOF
+else
+    echo "Maintaining Port 80 Configuration (Non-SSL)..."
+    # Port 80 config is already applied in Step 11, we just ensure it's correct
+fi
 
-# 12. Finalize and Start
-echo "Finalizing deployment..."
+# 14. Finalize and Start
+echo "Starting services..."
 nginx -t && systemctl restart nginx
 systemctl daemon-reload
 systemctl enable etechacademy.service
@@ -228,9 +208,12 @@ systemctl restart etechacademy.service
 
 echo "------------------------------------------------"
 echo "DEPLOYMENT COMPLETE"
-echo "CA Installed: /usr/local/share/ca-certificates/ncae-ca.crt"
-echo "Original app neutralized at /opt/etechacademy.old"
-echo "Check site at: https://$DOMAIN"
-echo "New app running from /opt/etechacademy"
+if [ "$APPLY_SSL" == "yes" ]; then
+    echo "Mode: HTTPS (SSL Enabled)"
+    echo "URL:  https://$DOMAIN"
+else
+    echo "Mode: HTTP ONLY (SSL FAILED/SKIPPED)"
+    echo "URL:  http://$DOMAIN"
+fi
 echo "------------------------------------------------"
 systemctl status etechacademy.service --no-pager
