@@ -126,6 +126,11 @@ server {
     server_tokens off;
     add_header X-Frame-Options "SAMEORIGIN";
 
+    location = /robots.txt {
+        root /opt/etechacademy/static;
+        access_log off;
+    }
+
     location / {
         limit_except GET POST { deny all; }
         proxy_pass http://127.0.0.1:5000;
@@ -173,7 +178,16 @@ if [ "$APPLY_SSL" == "yes" ]; then
 server {
     listen 80;
     server_name $DOMAIN $EXTERNAL_IP $INTERNAL_IP localhost;
-    return 301 https://\$host\$request_uri;
+
+    location = /robots.txt {
+        root /opt/etechacademy/static;
+        access_log off;
+    }
+
+    
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
 }
 
 server {
@@ -186,6 +200,11 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    location = /robots.txt {
+        root /opt/etechacademy/static;
+        access_log off;
+    }
 
     location / {
         limit_except GET POST { deny all; }
